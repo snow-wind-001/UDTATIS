@@ -1,0 +1,31 @@
+# Data directories
+data/
+images/
+__pycache__/
+*.pyc
+
+# Model weights and large files
+*.pth
+*.ckpt
+*.pack
+
+# Output directories
+Composition/model/
+Composition/summary/
+Warp/model/
+Warp/summary/
+Warp/results/
+Composition/results/
+draw/output/
+test_results/
+
+# Logs and temporary files
+*.log
+*.tmp
+.DS_Store
+
+# Special cases (larger than 1MB)
+EfficientLoFTR/assets/main_figure.jpg
+
+# Embedded git repositories
+EfficientLoFTR/ 

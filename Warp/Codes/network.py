@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
-import utils.torch_DLT as torch_DLT
-import utils.torch_homo_transform as torch_homo_transform
-import utils.torch_tps_transform as torch_tps_transform
+import Warp.Codes.utils.torch_DLT as torch_DLT
+import Warp.Codes.utils.torch_homo_transform as torch_homo_transform
+import Warp.Codes.utils.torch_tps_transform as torch_tps_transform
 import ssl
 import torch.nn.functional as F
 import cv2
@@ -12,7 +12,7 @@ import torchvision.models as models
 import torchvision.transforms as T
 resize_512 = T.Resize((512,512))
 
-import grid_res
+import Warp.Codes.grid_res as grid_res
 grid_h = grid_res.GRID_H
 grid_w = grid_res.GRID_W
 

@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ImprovedDiffusionComposition Network Flow</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+            background-color: #f8f9fa;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #3498db;
+            margin-top: 30px;
+        }
+        .description {
+            margin-bottom: 30px;
+        }
+        .mermaid {
+            margin: 40px 0;
+            overflow: auto;
+        }
+        .legend {
+            background-color: #f1f1f1;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 30px;
+        }
+        .legend h3 {
+            margin-top: 0;
+            color: #2c3e50;
+        }
+        .legend ul {
+            padding-left: 20px;
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            overflow: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ImprovedDiffusionComposition Network Architecture</h1>
+        
+        <div class="description">
+            <p>This diagram illustrates the complete flow of the ImprovedDiffusionComposition model, showing how two warped images and two mask images are processed through the diffusion model to create a seamlessly composited output.</p>
+        </div>
+
+        <h2>Network Architecture Overview</h2>
+        <div class="mermaid">
+            graph TD
+                subgraph "Initialization"
+                    init[ImprovedDiffusionComposition]
+                    diff[ImprovedDiffusionModel]
+                    chan[ChannelAdapter]
+                    mask_gen[MaskGenerator]
+                    
+                    init --> diff
+                    init --> chan
+                    init --> mask_gen
+                end
+                
+                subgraph "Input Processing"
+                    warp1[Warp Image 1]
+                    warp2[Warp Image 2]
+                    mask1[Mask 1]
+                    mask2[Mask 2]
+                    
+                    warp1 --> dev1[Transfer to Device]
+                    warp2 --> dev2[Transfer to Device]
+                    mask1 --> dev3[Transfer to Device]
+                    mask2 --> dev4[Transfer to Device]
+                end
+                
+                subgraph "Diffusion Process"
+                    t[Random Timestep t]
+                    dev1 --> noise_add[Add Noise]
+                    t --> noise_add
+                    
+                    noise_add --> noisy_warp1[Noisy Warp1]
+                    
+                    noisy_warp1 --> size_check{Size Match?}
+                    dev2 --> size_check
+                    
+                    size_check -->|Yes| concat1[Concatenate]
+                    size_check -->|No| resize[Resize Warp2] --> concat1
+                    
+                    concat1 --> channel_adapt[Channel Adapter]
+                    channel_adapt --> diffusion_input[Diffusion Input]
+                    
+                    diffusion_input --> diff_model[Diffusion Model]
+                    t --> diff_model
+                    
+                    diff_model --> pred_noise[Predicted Noise]
+                    
+                    pred_noise --> noise_size_check{Size Match?}
+                    noise_size_check -->|Yes| denoise[Denoise Image]
+                    noise_size_check -->|No| resize_noise[Resize Noise] --> denoise
+                    
+                    noisy_warp1 --> denoise
+                end
+                
+                subgraph "Mask Processing"
+                    dev1 --> concat2[Concatenate Original Images]
+                    dev2 --> concat2
+                    
+                    concat2 --> mask_generator[Mask Generator]
+                    mask_generator --> learned_mask[Learned Mask]
+                    
+                    dev3 --> overlap[Calculate Overlap Region]
+                    dev4 --> overlap
+                    
+                    overlap --> overlap_region[Overlap Region]
+                    
+                    learned_mask --> mask_blend[Blend Masks]
+                    overlap_region --> mask_blend
+                    dev3 --> mask_blend
+                    
+                    mask_blend --> final_mask[Final Mask]
+                end
+                
+                subgraph "Final Composition"
+                    denoise --> compose[Compose Images]
+                    dev2 --> compose
+                    final_mask --> compose
+                    
+                    compose --> stitched_image[Stitched Image]
+                end
+                
+                init --> warp1
+                init --> warp2
+                init --> mask1
+                init --> mask2
+                
+                stitched_image --> output[Final Output]
+                final_mask --> output
+                denoise --> output
+        </div>
+
+        <h2>Detailed Diffusion Forward Process</h2>
+        <div class="mermaid">
+            graph TD
+                subgraph "Diffusion Forward Process"
+                    x_input[Input: Concatenated Images]
+                    t[Timestep]
+                    
+                    x_input --> time_embed[Time Embedding]
+                    t --> time_embed
+                    
+                    time_embed --> t_emb[Embedded Timestep]
+                    
+                    x_input --> downs[Downsampling Blocks]
+                    t_emb --> downs
+                    
+                    downs --> skip_connections[Skip Connections]
+                    
+                    downs --> mid[Middle Blocks with Attention]
+                    t_emb --> mid
+                    
+                    mid --> ups[Upsampling Blocks]
+                    t_emb --> ups
+                    skip_connections --> ups
+                    
+                    ups --> final[Final Convolution]
+                    x_input --> residual[Residual Connection] --> final
+                    
+                    final --> pred_noise[Predicted Noise]
+                end
+        </div>
+
+        <h2>Mask Fusion Process</h2>
+        <div class="mermaid">
+            graph TD
+                subgraph "Mask Fusion Process"
+                    mask1[Mask 1]
+                    mask2[Mask 2]
+                    learned[Learned Mask]
+                    
+                    mask1 --> overlap[Calculate Overlap: mask1 * mask2]
+                    mask2 --> overlap
+                    
+                    overlap --> overlap_region[Overlap Region]
+                    
+                    mask1 --> subtract[Subtract Overlap]
+                    overlap_region --> subtract
+                    
+                    learned --> weight[Weight Overlap Region]
+                    overlap_region --> weight
+                    
+                    subtract --> final_mask[Final Mask = (mask1 - overlap) + (overlap * learned)]
+                    weight --> final_mask
+                end
+        </div>
+
+        <h2>Final Image Composition</h2>
+        <div class="mermaid">
+            graph TD
+                subgraph "Image Composition"
+                    denoised[Denoised Image]
+                    warp2[Warp Image 2]
+                    mask[Final Mask]
+                    
+                    denoised --> weight1[Weight by Mask]
+                    mask --> weight1
+                    
+                    warp2 --> weight2[Weight by Inverse Mask]
+                    mask --> invert[1 - Mask] --> weight2
+                    
+                    weight1 --> add[Add Weighted Images]
+                    weight2 --> add
+                    
+                    add --> stitched[Stitched Image]
+                end
+        </div>
+
+        <div class="legend">
+            <h3>Key Components</h3>
+            <ul>
+                <li><strong>ImprovedDiffusionModel</strong>: Core diffusion model that predicts noise</li>
+                <li><strong>ChannelAdapter</strong>: Converts concatenated input to expected channel dimensions</li>
+                <li><strong>MaskGenerator</strong>: Network that generates blend masks for image composition</li>
+                <li><strong>Forward Diffusion</strong>: Process that adds noise to an image according to a specified timestep</li>
+                <li><strong>Noise Prediction</strong>: Key step that happens at line 907 in the original code</li>
+                <li><strong>Mask Fusion</strong>: Process that combines original masks with learned masks in overlap regions</li>
+            </ul>
+        </div>
+
+        <h2>Code Snippet for Key Steps</h2>
+        <pre>
+# Key part of forward method
+t = torch.randint(0, self.num_timesteps, (batch_size,), device=self.device).long()
+noisy_warp1, _ = self.forward_diffusion(warp1, t)
+
+# Ensure sizes match
+if noisy_warp1.shape[2:] != warp2.shape[2:]:
+    warp2 = F.interpolate(warp2, size=noisy_warp1.shape[2:], mode='bilinear', align_corners=True)
+
+# Concatenate and adapt channels
+x_input = torch.cat([noisy_warp1, warp2], dim=1)
+x_input = self.channel_adapter(x_input)
+
+# Core diffusion step (line 907)
+predicted_noise = self.diffusion(x_input, t)
+
+# Denoise image
+denoised = (noisy_warp1 - torch.sqrt(1. - alpha_cumprod_t) * predicted_noise) / torch.sqrt(alpha_cumprod_t)
+
+# Generate and process masks
+if mask1 is not None and mask2 is not None:
+    overlap_region = mask1 * mask2
+    learned_mask1 = (mask1 - overlap_region) + overlap_region * learned_mask1
+    
+    # Final composition
+    stitched_image = x * learned_mask1 + y * (1 - learned_mask1)
+        </pre>
+    </div>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            securityLevel: 'loose',
+            flowchart: { 
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+    </script>
+</body>
+</html> 
