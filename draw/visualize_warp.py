@@ -62,11 +62,26 @@ except ImportError as e:
         WARP_MODEL_AVAILABLE = False
 
 # 简化可视化函数
-def simple_visualize(img1_batch, img2_batch, output_dir):
-    """当无法加载Warp模型时的简单可视化方案"""
+def simple_visualize(img1_batch, img2_batch, output_dir, original_sizes=None, preserve_resolution=False):
+    """当无法加载Warp模型时的简单可视化方案
+    
+    参数:
+        img1_batch: 第一批图像
+        img2_batch: 第二批图像
+        output_dir: 输出目录
+        original_sizes: 原始图像尺寸元组，格式为 (img1_sizes, img2_sizes)
+        preserve_resolution: 是否保留原始分辨率
+    """
     visualizer = FeatureVisualizer(save_dir=output_dir)
-    visualizer.visualize_tensor(img1_batch, 'input_img1')
-    visualizer.visualize_tensor(img2_batch, 'input_img2')
+    
+    # 提取原始尺寸信息
+    img1_sizes = None
+    img2_sizes = None
+    if original_sizes and len(original_sizes) == 2:
+        img1_sizes, img2_sizes = original_sizes
+    
+    visualizer.visualize_tensor(img1_batch, 'input_img1', original_sizes=img1_sizes, preserve_resolution=preserve_resolution)
+    visualizer.visualize_tensor(img2_batch, 'input_img2', original_sizes=img2_sizes, preserve_resolution=preserve_resolution)
     print(f"已保存输入图像到: {output_dir}")
     return {'img1': img1_batch, 'img2': img2_batch}
 
@@ -147,13 +162,16 @@ class WarpVisualizer(nn.Module):
             hook = self.model.regressNet2_part1.register_forward_hook(hook_fn('regressNet2'))
             self.hooks.append(hook)
     
-    def visualize_warp_pipeline(self, img1, img2):
+    def visualize_warp_pipeline(self, img1, img2, original_sizes=None, preserve_resolution=False):
         """
         可视化warp算法的完整流程
         
         参数:
             img1: 第一张图像
             img2: 第二张图像
+            original_sizes: 原始图像尺寸元组，格式为 (img1_sizes, img2_sizes)，
+                           其中每个元素是一个尺寸列表，如 [(width1, height1), (width2, height2), ...]
+            preserve_resolution: 是否保留原始分辨率
         
         返回:
             变形后的图像和中间结果
@@ -165,8 +183,14 @@ class WarpVisualizer(nn.Module):
         self.activations = {}
         
         # 记录输入图像
-        self.visualizer.visualize_tensor(img1, 'input_img1')
-        self.visualizer.visualize_tensor(img2, 'input_img2')
+        # 提取原始尺寸信息
+        img1_sizes = None
+        img2_sizes = None
+        if original_sizes and len(original_sizes) == 2:
+            img1_sizes, img2_sizes = original_sizes
+        
+        self.visualizer.visualize_tensor(img1, 'input_img1', original_sizes=img1_sizes, preserve_resolution=preserve_resolution)
+        self.visualizer.visualize_tensor(img2, 'input_img2', original_sizes=img2_sizes, preserve_resolution=preserve_resolution)
         
         # 前向传播，获取网络输出
         with torch.no_grad():
@@ -236,7 +260,17 @@ class WarpVisualizer(nn.Module):
                         mask = mask.cuda()
                     
                     warped_img_homo = torch_homo_transform.transformer(torch.cat((img2, mask), 1), H_mat, (img_h, img_w))
-                    self.visualizer.visualize_tensor(warped_img_homo[:, :3, ...], 'warped_img_homo')
+                    
+                    # 应用原始分辨率
+                    if preserve_resolution and img2_sizes:
+                        self.visualizer.visualize_tensor(warped_img_homo[:, :3, ...], 'warped_img_homo', 
+                                                       original_sizes=img2_sizes, preserve_resolution=preserve_resolution)
+                        # 单独保存蒙版
+                        if warped_img_homo.shape[1] > 3:
+                            self.visualizer.visualize_tensor(warped_img_homo[:, 3:, ...], 'warped_mask_homo', 
+                                                           original_sizes=img2_sizes, preserve_resolution=preserve_resolution)
+                    else:
+                        self.visualizer.visualize_tensor(warped_img_homo[:, :3, ...], 'warped_img_homo')
                     
                     # 2. 计算网格变形
                     try:
@@ -248,134 +282,99 @@ class WarpVisualizer(nn.Module):
                         
                         mesh_motion = offset_2.reshape(-1, grid_side, grid_side, 2)
                         
-                        # 根据函数签名选择合适的调用方式
-                        try:
-                            # 尝试使用原始 network.py 中的函数 (3个参数)
-                            rigid_mesh = get_rigid_mesh(batch_size, img_h, img_w)
-                        except TypeError:
-                            # 如果失败，尝试使用main.py中的实现 (5个参数)
-                            rigid_mesh = custom_get_rigid_mesh(batch_size, img_h, img_w, grid_h, grid_w, device=device)
-                            
-                        mesh = rigid_mesh + mesh_motion
+                        # 首先使用单应性矩阵变换
+                        mesh_warped = torch_homo_transform.transform_by_homo(
+                            custom_get_rigid_mesh(batch_size, img_h, img_w, grid_h, grid_w, device),
+                            H_mat
+                        )
                         
-                        # 可视化网格变形
+                        # 然后使用局部网格变形
+                        if 'torch_tps_transform' in globals():
+                            try:
+                                fixed_h, fixed_w = torch.meshgrid(
+                                    torch.linspace(0, img_h, grid_h+1), 
+                                    torch.linspace(0, img_w, grid_w+1)
+                                )
+                                fixed_p = torch.stack([fixed_w, fixed_h], -1).reshape(-1, 2)
+                                if torch.cuda.is_available():
+                                    fixed_p = fixed_p.cuda()
+                                fixed_p = fixed_p.unsqueeze(0).expand(batch_size, -1, -1)
+                                
+                                # 添加偏移
+                                moving_p = fixed_p + offset_2
+                                moving_p = moving_p.reshape(batch_size, grid_h+1, grid_w+1, 2)
+                                
+                                # 使用TPS变换
+                                tps_grid = torch_tps_transform.torch_tps_grid(moving_p, mesh_warped)
+                                mesh_warped = tps_grid
+                                
+                                print("成功应用TPS变换")
+                            except Exception as e:
+                                print(f"TPS变换失败: {e}")
+                        
+                        # 绘制变形网格
                         grid_visualizations = []
-                        for i in range(batch_size):
-                            # 将网格点转换为numpy数组
-                            mesh_np = mesh[i].detach().cpu().numpy()
-                            # 创建一个空白图像
-                            grid_img = np.ones((img_h, img_w, 3), dtype=np.uint8) * 255
-                            # 绘制网格
-                            for y in range(mesh_np.shape[0]):
-                                for x in range(mesh_np.shape[1]):
-                                    if y < mesh_np.shape[0] - 1:
-                                        cv2.line(grid_img, 
-                                               (int(mesh_np[y, x, 0]), int(mesh_np[y, x, 1])),
-                                               (int(mesh_np[y+1, x, 0]), int(mesh_np[y+1, x, 1])),
-                                               (0, 255, 0), 1)
-                                    if x < mesh_np.shape[1] - 1:
-                                        cv2.line(grid_img, 
-                                               (int(mesh_np[y, x, 0]), int(mesh_np[y, x, 1])),
-                                               (int(mesh_np[y, x+1, 0]), int(mesh_np[y, x+1, 1])),
-                                               (0, 255, 0), 1)
+                        for i in range(min(batch_size, self.visualizer.max_images)):
+                            # 如果保留原始分辨率，使用原始尺寸创建网格图像
+                            if preserve_resolution and img1_sizes and i < len(img1_sizes):
+                                orig_w, orig_h = img1_sizes[i]
+                                grid_img = np.zeros((orig_h, orig_w, 3), dtype=np.uint8)
+                            else:
+                                grid_img = np.zeros((img_h, img_w, 3), dtype=np.uint8)
+                            
+                            # 收集网格点坐标
+                            points = []
+                            for y in range(grid_h+1):
+                                for x in range(grid_w+1):
+                                    if preserve_resolution and img1_sizes and i < len(img1_sizes):
+                                        orig_w, orig_h = img1_sizes[i]
+                                        # 修改比例来匹配原始尺寸
+                                        px = int(mesh_warped[i, y, x, 0].item() * (orig_w / img_w))
+                                        py = int(mesh_warped[i, y, x, 1].item() * (orig_h / img_h))
+                                    else:
+                                        px = int(mesh_warped[i, y, x, 0].item())
+                                        py = int(mesh_warped[i, y, x, 1].item())
+                                    points.append((px, py))
+                            
+                            # 绘制网格线
+                            for y in range(grid_h+1):
+                                for x in range(grid_w):
+                                    pt1 = points[y*(grid_w+1) + x]
+                                    pt2 = points[y*(grid_w+1) + x + 1]
+                                    cv2.line(grid_img, pt1, pt2, (0, 255, 0), 1)
+                            
+                            for y in range(grid_h):
+                                for x in range(grid_w+1):
+                                    pt1 = points[y*(grid_w+1) + x]
+                                    pt2 = points[(y+1)*(grid_w+1) + x]
+                                    cv2.line(grid_img, pt1, pt2, (0, 255, 0), 1)
+                            
                             # 转换为tensor
                             grid_tensor = torch.from_numpy(grid_img.transpose(2, 0, 1)).float() / 255.0
                             grid_visualizations.append(grid_tensor)
                         
                         grid_tensor_batch = torch.stack(grid_visualizations)
-                        self.visualizer.visualize_tensor(grid_tensor_batch, 'mesh_deformation')
+                        if preserve_resolution and img1_sizes:
+                            self.visualizer.visualize_tensor(grid_tensor_batch, 'mesh_deformation', 
+                                                         original_sizes=img1_sizes[:len(grid_visualizations)], 
+                                                         preserve_resolution=preserve_resolution)
+                        else:
+                            self.visualizer.visualize_tensor(grid_tensor_batch, 'mesh_deformation')
                         
-                        # 3. 应用TPS变换
-                        norm_rigid_mesh = get_norm_mesh(rigid_mesh, img_h, img_w)
-                        norm_mesh = get_norm_mesh(mesh, img_h, img_w)
-                        
-                        warped_img_tps = torch_tps_transform.transformer(torch.cat((img2, mask), 1), 
-                                                                       norm_mesh, norm_rigid_mesh, 
-                                                                       (img_h, img_w))
-                        self.visualizer.visualize_tensor(warped_img_tps[:, :3, ...], 'warped_img_tps')
-                        
-                        # 对比可视化
-                        self.visualizer.side_by_side_comparison(
-                            img1, warped_img_tps[:, :3, ...], 'original_vs_warped',
-                            titles=['Original Image', 'Warped Image']
-                        )
                     except Exception as e:
                         print(f"网格变形可视化失败: {e}")
-                        
+                        import traceback
+                        traceback.print_exc()
+                    
+                    # 对比可视化
+                    self.visualizer.side_by_side_comparison(
+                        img1, img2, 'original_vs_target',
+                        titles=['Source Image', 'Target Image']
+                    )
                 except Exception as e:
-                    print(f"单应性变换计算失败: {e}")
-            else:
-                # 使用简化版网格可视化
-                print("使用简化版网格可视化（无变形函数）")
-                
-                # 动态计算网格大小
-                if isinstance(offset_2, torch.Tensor):
-                    offset_size = offset_2.size(1)
-                    grid_points = int(offset_size / 2)
-                    grid_side = int(np.sqrt(grid_points))
-                    grid_h, grid_w = grid_side-1, grid_side-1
-                else:
-                    grid_h, grid_w = 8, 8
-                
-                # 使用自定义网格函数生成基础网格
-                try:
-                    rigid_mesh = custom_get_rigid_mesh(batch_size, img_h, img_w, grid_h, grid_w, device=device)
-                    # 将rigid_mesh转换为numpy以便绘制
-                    rigid_mesh_np = rigid_mesh.detach().cpu().numpy()
-                except Exception as e:
-                    print(f"网格生成失败: {e}")
-                    rigid_mesh_np = None
-                
-                # 创建简化网格，仍然可以可视化
-                grid_visualizations = []
-                for i in range(batch_size):
-                    # 创建一个基本网格
-                    grid_img = np.ones((img_h, img_w, 3), dtype=np.uint8) * 255
-                    
-                    # 设置网格点和变形
-                    points = []
-                    for y in range(grid_h+1):
-                        for x in range(grid_w+1):
-                            px = int(x * (img_w / grid_w))
-                            py = int(y * (img_h / grid_h))
-                            # 使用offset_2添加一些变形（如果可用）
-                            if isinstance(offset_2, torch.Tensor):
-                                try:
-                                    # 使用动态计算的grid_side
-                                    offset = offset_2.reshape(-1, grid_side * grid_side, 2)
-                                    idx = y * (grid_w+1) + x
-                                    if idx < offset.size(1):
-                                        px += int(offset[i, idx, 0].item() * 10)
-                                        py += int(offset[i, idx, 1].item() * 10)
-                                except:
-                                    pass  # 忽略转换错误
-                            points.append((px, py))
-                    
-                    # 绘制网格线
-                    for y in range(grid_h+1):
-                        for x in range(grid_w):
-                            pt1 = points[y*(grid_w+1) + x]
-                            pt2 = points[y*(grid_w+1) + x + 1]
-                            cv2.line(grid_img, pt1, pt2, (0, 255, 0), 1)
-                    
-                    for y in range(grid_h):
-                        for x in range(grid_w+1):
-                            pt1 = points[y*(grid_w+1) + x]
-                            pt2 = points[(y+1)*(grid_w+1) + x]
-                            cv2.line(grid_img, pt1, pt2, (0, 255, 0), 1)
-                    
-                    # 转换为tensor
-                    grid_tensor = torch.from_numpy(grid_img.transpose(2, 0, 1)).float() / 255.0
-                    grid_visualizations.append(grid_tensor)
-                
-                grid_tensor_batch = torch.stack(grid_visualizations)
-                self.visualizer.visualize_tensor(grid_tensor_batch, 'mesh_deformation')
-                
-                # 对比可视化
-                self.visualizer.side_by_side_comparison(
-                    img1, img2, 'original_vs_target',
-                    titles=['Source Image', 'Target Image']
-                )
+                    print(f"单应性变换失败: {e}")
+                    import traceback
+                    traceback.print_exc()
         except Exception as e:
             print(f"变形可视化过程中出错: {e}")
             import traceback
@@ -387,7 +386,12 @@ class WarpVisualizer(nn.Module):
                 valid_scores_mask = valid_scores
                 if valid_scores_mask.dim() <= 2:
                     valid_scores_mask = valid_scores_mask.unsqueeze(-1).unsqueeze(-1)
-                self.visualizer.visualize_masks(valid_scores_mask, 'valid_scores')
+                if preserve_resolution and img1_sizes:
+                    # 通过上采样来调整有效点掩码到原始分辨率
+                    # 这里假设掩码与输入图像的空间尺寸相匹配，如果不是，可能需要额外处理
+                    self.visualizer.visualize_masks(valid_scores_mask, 'valid_scores')
+                else:
+                    self.visualizer.visualize_masks(valid_scores_mask, 'valid_scores')
             except Exception as e:
                 print(f"可视化有效点掩码出错: {e}")
         
@@ -408,23 +412,24 @@ class WarpVisualizer(nn.Module):
         self.hooks = []
 
 
-def load_images_from_directory(directory, device, target_size=(256, 256)):
+def load_images_from_directory(directory, device, target_size=None):
     """
-    从目录加载所有图像
+    从目录加载所有图像，保留原始分辨率
     
     参数:
         directory: 图像目录
         device: 计算设备
-        target_size: 目标尺寸
+        target_size: 目标尺寸，如果为None则保留原始分辨率
         
     返回:
-        图像张量批次
+        图像张量批次和原始尺寸列表
     """
     image_paths = glob.glob(os.path.join(directory, '*'))
     if not image_paths:
         raise ValueError(f"未在{directory}目录中找到图像")
     
     images = []
+    original_sizes = []
     print(f"正在从{directory}加载{len(image_paths)}张图像...")
     
     for path in image_paths:
@@ -432,11 +437,17 @@ def load_images_from_directory(directory, device, target_size=(256, 256)):
         if path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp')):
             try:
                 img = Image.open(path).convert('RGB')
-                img = img.resize(target_size, Image.BICUBIC)
+                original_size = img.size  # 保存原始尺寸 (width, height)
+                original_sizes.append(original_size)
+                
+                # 如果提供了目标尺寸，则调整大小用于处理
+                if target_size:
+                    img = img.resize(target_size, Image.BICUBIC)
+                
                 img_np = np.array(img) / 255.0  # 归一化到[0,1]
                 img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).float()  # [C, H, W]
                 images.append(img_tensor)
-                print(f"已加载图像: {path}")
+                print(f"已加载图像: {path}, 原始尺寸: {original_size}")
             except Exception as e:
                 print(f"无法加载图像 {path}: {e}")
     
@@ -444,7 +455,7 @@ def load_images_from_directory(directory, device, target_size=(256, 256)):
         raise ValueError(f"无法加载{directory}中的任何图像")
     
     batch = torch.stack(images, dim=0).to(device)  # [B, C, H, W]
-    return batch
+    return batch, original_sizes
 
 
 def main():
@@ -455,7 +466,8 @@ def main():
     parser.add_argument('--model_path', type=str, default='/home/spikebai/owncode/UDTATIS/Warp/model/checkpoint_epoch_40.pth', help='Path to model checkpoint')
     parser.add_argument('--demo', action='store_true', help='使用演示模式，即使导入失败也尝试可视化')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device')
-    parser.add_argument('--target_size', type=int, nargs=2, default=[256, 256], help='Target image size (width, height)')
+    parser.add_argument('--preserve_resolution', action='store_true', help='保留原始分辨率')
+    parser.add_argument('--target_size', type=int, nargs=2, default=[256, 256], help='处理用的目标图像尺寸 (宽度, 高度)')
     
     args = parser.parse_args()
     
@@ -467,16 +479,21 @@ def main():
     
     # 加载图像
     try:
+        # 根据是否保留原始分辨率决定传入的target_size参数
+        process_size = tuple(args.target_size) if not args.preserve_resolution else None
+        
         # 加载images/image1文件夹中的所有图像
-        img1_batch = load_images_from_directory(args.image1_dir, device, tuple(args.target_size))
+        img1_batch, img1_original_sizes = load_images_from_directory(args.image1_dir, device, process_size)
         
         # 加载images/image2文件夹中的所有图像
-        img2_batch = load_images_from_directory(args.image2_dir, device, tuple(args.target_size))
+        img2_batch, img2_original_sizes = load_images_from_directory(args.image2_dir, device, process_size)
         
         # 确保两个批次的大小相同
         min_batch_size = min(img1_batch.size(0), img2_batch.size(0))
         img1_batch = img1_batch[:min_batch_size]
         img2_batch = img2_batch[:min_batch_size]
+        img1_original_sizes = img1_original_sizes[:min_batch_size]
+        img2_original_sizes = img2_original_sizes[:min_batch_size]
         
         print(f"处理 {min_batch_size} 对图像...")
         
@@ -519,14 +536,22 @@ def main():
             # 使用模型进行可视化
             visualizer = WarpVisualizer(model, output_dir=args.output_dir)
             try:
-                results = visualizer.visualize_warp_pipeline(img1_batch, img2_batch)
+                # 传递原始尺寸信息到可视化pipeline
+                results = visualizer.visualize_warp_pipeline(
+                    img1_batch, 
+                    img2_batch, 
+                    original_sizes=(img1_original_sizes, img2_original_sizes),
+                    preserve_resolution=args.preserve_resolution
+                )
                 print(f"成功可视化warp过程。输出已保存到: {args.output_dir}")
             finally:
                 visualizer.remove_hooks()
         else:
             # 使用简化可视化
             print("使用简化可视化工具（无模型）")
-            simple_visualize(img1_batch, img2_batch, args.output_dir)
+            simple_visualize(img1_batch, img2_batch, args.output_dir, 
+                            original_sizes=(img1_original_sizes, img2_original_sizes),
+                            preserve_resolution=args.preserve_resolution)
             
     except Exception as e:
         print(f"可视化过程中发生错误: {e}")

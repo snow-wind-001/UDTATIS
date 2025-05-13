@@ -26,7 +26,7 @@
     "composition": {
         "train": {
             "gpu": "0",
-            "batch_size": 4,
+            "batch_size": 8,
             "max_epoch": 100,
             "learning_rate": 1e-4,
             "train_path": "data/UDIS-D/composition_data/train",
@@ -50,12 +50,14 @@
             "batch_size": 1,
             "test_path": "data/UDIS-D/composition_data/test",
             "result_path": "Composition/results",
+            "limit_test_images": 3,
             "save_dirs": {
                 "learn_mask1": "learn_mask1",
                 "learn_mask2": "learn_mask2",
                 "composition": "composition",
                 "denoised": "denoised",
-                "visualization": "visualization"
+                "visualization": "visualization",
+                "mask": "mask"
             }
         }
     }

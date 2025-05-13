@@ -25,9 +25,13 @@ if [ -z "$(ls -A images/image1)" ] || [ -z "$(ls -A images/image2)" ]; then
     exit 1
 fi
 
+# 添加是否保留原始分辨率的参数
+PRESERVE_RESOLUTION="--preserve_resolution"
+echo "将保留原始图像分辨率"
+
 # 运行warp过程可视化
 echo "开始可视化warp过程..."
-python draw/visualize_warp.py --image1_dir images/image1 --image2_dir images/image2 --output_dir draw/output/warp $MODEL_PATH
+python draw/visualize_warp.py --image1_dir images/image1 --image2_dir images/image2 --output_dir draw/output/warp $MODEL_PATH $PRESERVE_RESOLUTION
 
 # 检查是否成功执行
 if [ $? -eq 0 ]; then

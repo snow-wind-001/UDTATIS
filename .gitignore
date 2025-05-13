@@ -16,6 +16,7 @@ Warp/model/
 Warp/summary/
 Warp/results/
 Composition/results/
+Composition/full_test_results/
 draw/output/
 test_results/
 
@@ -23,6 +24,7 @@ test_results/
 *.log
 *.tmp
 .DS_Store
+temp_repo/
 
 # Special cases (larger than 1MB)
 EfficientLoFTR/assets/main_figure.jpg

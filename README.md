@@ -655,3 +655,79 @@ python Composition/Codes/test_composition.py \
   --mask2 ./data/UDIS-D/composition_data/train/mask2/000000.jpg \
   --output_dir ./test_results/single_test
 ```
+
+# 分布式训练
+
+本项目现已支持基于PyTorch分布式数据并行(DDP)的单机多卡和多机训练。使用以下命令启动分布式训练：
+
+```bash
+# 推荐方式：使用torchrun脚本（更可靠）
+./run_torchrun.sh --gpus 4 --part composition --data_dir /path/to/data
+
+# 传统方式：
+python train_distributed.py --gpus 4 --part composition --data_dir /path/to/data
+```
+
+## 分布式训练注意事项
+
+1. `batch_size`参数表示每个GPU的批次大小，总批次大小 = `batch_size` × GPU数量
+2. 确保每个GPU有足够的内存，如果出现OOM错误，请尝试减小`batch_size`或启用梯度累积
+3. 分布式训练使用NCCL后端，对NVIDIA GPU优化
+4. 只有rank 0进程会保存模型、记录日志和执行验证
+5. 同步BatchNorm可以通过`--sync_bn`参数启用，以提高多卡训练的稳定性
+
+## 单卡训练
+
+如果只有单张GPU或不想使用分布式训练，可以使用以下命令：
+
+```bash
+python main.py --mode train --part composition --data_dir /path/to/data
+```
+
+## 更详细的分布式训练说明
+
+请参阅 [DISTRIBUTED_TRAINING.md](DISTRIBUTED_TRAINING.md) 获取更详细的分布式训练说明，包括参数详解、多机训练配置和故障排除指南。
+
+## 最近的改进
+
+最近我们对系统进行了一系列优化，特别是在Composition模块方面：
+
+### Composition模块改进
+
+1. **直接图像处理**：改进了`apply_composition_mask_processing`函数，使其能够直接处理图像而不是使用子进程调用，提高了性能和可靠性。
+
+2. **测试和调试工具**：开发了三个专门的测试脚本：
+   - `test_composition_directly.py`：直接测试`process_mask_for_composition`函数
+   - `test_composition_full.py`：实现包含模型预测和后处理的完整端到端测试
+   - `test_composition_debug.py`：在测试过程中提供详细信息，用于调试目的
+
+3. **错误处理和目录管理**：实现了适当的错误处理，并确保创建所有必要的目录，包括mask目录。
+
+4. **性能监控**：所有测试脚本现在都会测量和报告处理时间，测试显示：
+   - 模型预测每张图像大约需要10秒
+   - 后处理非常快（约0.15秒）
+   - 平均总处理时间约为每张图像10秒
+
+5. **结果组织**：处理后的图像现在正确保存在适当的目录中，合并结果存储在"merged"目录中。
+
+### 使用新测试工具
+
+1. **基本Composition测试**：
+```bash
+python test_composition_directly.py --data_dir data/UDIS-D/composition_data/test --output_dir Composition/direct_test_results
+```
+
+2. **带模型的完整Composition测试**：
+```bash
+python test_composition_full.py --model_path Composition/model/model_latest.pth --test_data data/UDIS-D/composition_data/test
+```
+
+3. **交互式调试**：
+```bash
+python test_composition_debug.py --interactive --limit 5
+```
+
+这些工具提供不同级别的测试和调试功能：
+- `test_composition_directly.py`：仅测试不带模型预测的合成过程
+- `test_composition_full.py`：测试包括模型预测和合成在内的完整流程
+- `test_composition_debug.py`：提供详细的日志记录和可视化功能，用于调试目的

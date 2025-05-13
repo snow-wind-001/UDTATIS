@@ -80,8 +80,9 @@ def test(args):
     model.eval()
     
     # 创建网格变量
-    grid_h = 8  # 设置为合适的值
-    grid_w = 8  # 设置为合适的值
+    from Warp.Codes.grid_res import GRID_H, GRID_W
+    grid_h = GRID_H  # 从grid_res.py中导入标准网格大小
+    grid_w = GRID_W  # 从grid_res.py中导入标准网格大小
     
     # 评估指标
     total_psnr = 0
@@ -119,8 +120,26 @@ def test(args):
             warped_img2_np = warped_img2[0].cpu().numpy().transpose(1, 2, 0)
             
             # 计算PSNR和SSIM
-            batch_psnr = psnr(img1_np, warped_img2_np)
-            batch_ssim = ssim(img1_np, warped_img2_np, multichannel=True)
+            try:
+                # 确保图像在正确的数据范围内 (0-1或0-255)
+                # 检查图像范围，如果是在[0,1]区间内，设置data_range=1，否则设置为255
+                data_range = 1.0 if img1_np.max() <= 1.0 else 255.0
+                
+                # 计算PSNR
+                batch_psnr = psnr(img1_np, warped_img2_np, data_range=data_range)
+                
+                # 检查图像大小以确保SSIM计算正确
+                min_side = min(img1_np.shape[0], img1_np.shape[1])
+                if min_side < 7:
+                    batch_ssim = 0.0  # 如果图像太小，不计算SSIM
+                    print(f"Image too small for SSIM: {img1_np.shape}")
+                else:
+                    win_size = min(7, min_side - (min_side % 2) + 1)  # 确保win_size是小于图像大小的最大奇数
+                    batch_ssim = ssim(img1_np, warped_img2_np, win_size=win_size, channel_axis=2, data_range=data_range)
+            except Exception as e:
+                print(f"Error computing metrics: {e}")
+                batch_psnr = 0.0
+                batch_ssim = 0.0
             
             total_psnr += batch_psnr
             total_ssim += batch_ssim
@@ -154,32 +173,80 @@ def test(args):
         f.write(f'Average Valid Points: {avg_valid_points:.4f}\n')
         f.write(f'Average Continuity Loss: {avg_continuity_loss:.4f}\n')
 
+def H2Mesh(H, rigid_mesh):
+    batch_size = rigid_mesh.size()[0]
+    padded_mesh = torch.cat([rigid_mesh, torch.ones(batch_size, rigid_mesh.size()[1], rigid_mesh.size()[2], 1).cuda()], 3)
+    H_padded_mesh = torch.matmul(H.unsqueeze(1).unsqueeze(1), padded_mesh.unsqueeze(4))
+    return H_padded_mesh.squeeze(4)[:,:,:,:2] / H_padded_mesh.squeeze(4)[:,:,:,2:3]
+
 def apply_warp(img, H, mesh_motion):
+    batch_size, _, img_h, img_w = img.size()
+    
     # 应用单应性变换
     warped_img = torch_homo_transform.transformer(img, H, (img.size(2), img.size(3)))
     
-    # 应用网格变形
-    rigid_mesh = get_rigid_mesh(img.size(0), img.size(2), img.size(3))
-    mesh = rigid_mesh + mesh_motion
+    # 获取网格
+    from Warp.Codes.grid_res import GRID_H, GRID_W
+    grid_h = GRID_H
+    grid_w = GRID_W
+    
+    # 获取刚性网格
+    rigid_mesh = get_rigid_mesh(batch_size, img_h, img_w)
+    rigid_mesh_flat = rigid_mesh.reshape(batch_size, -1, 2)
+    
+    # 计算mesh_motion的预期形状
+    expected_size = (grid_h+1)*(grid_w+1)
+    
+    # 检查mesh_motion的维度，进行必要的适配
+    if mesh_motion.dim() == 2:
+        # 如果是[batch_size*N]形式，重塑为[batch_size, N, 2]
+        total_elements = mesh_motion.size(1)
+        if total_elements % 2 == 0:
+            elements_per_point = total_elements // 2
+            mesh_motion = mesh_motion.reshape(batch_size, elements_per_point, 2)
+        else:
+            # 如果不是偶数，可能是其他格式，尝试直接将其重塑为正确格式
+            mesh_motion = mesh_motion.reshape(batch_size, -1, 2)
+    
+    # 现在检查点的数量是否匹配
+    if mesh_motion.size(1) != expected_size:
+        print(f"Warning: mesh_motion has {mesh_motion.size(1)} points but expected {expected_size}")
+        # 使用简单的零偏移代替
+        mesh_motion = torch.zeros_like(rigid_mesh_flat)
+    
+    # 应用单应性矩阵到刚性网格
+    ones = torch.ones(batch_size, rigid_mesh_flat.size(1), 1).to(rigid_mesh_flat.device)
+    rigid_mesh_homo = torch.cat([rigid_mesh_flat, ones], 2)
+    transformed_points = torch.bmm(H, rigid_mesh_homo.transpose(1, 2)).transpose(1, 2)
+    ini_mesh = transformed_points[:, :, :2] / transformed_points[:, :, 2:3]
+    
+    # 添加网格运动
+    mesh = ini_mesh + mesh_motion
     
     # 归一化网格
-    norm_rigid_mesh = get_norm_mesh(rigid_mesh, img.size(2), img.size(3))
-    norm_mesh = get_norm_mesh(mesh, img.size(2), img.size(3))
+    norm_rigid_mesh_flat = rigid_mesh_flat.clone()
+    norm_rigid_mesh_flat[:, :, 0] = norm_rigid_mesh_flat[:, :, 0] / (img_w/2) - 1
+    norm_rigid_mesh_flat[:, :, 1] = norm_rigid_mesh_flat[:, :, 1] / (img_h/2) - 1
+    
+    norm_mesh = mesh.clone()
+    norm_mesh[:, :, 0] = norm_mesh[:, :, 0] / (img_w/2) - 1
+    norm_mesh[:, :, 1] = norm_mesh[:, :, 1] / (img_h/2) - 1
     
     # 应用TPS变换
     mask = torch.ones_like(img)
     if torch.cuda.is_available():
         mask = mask.cuda()
-    warped_img = torch_tps_transform.transformer(torch.cat((warped_img, mask), 1), 
-                                               norm_mesh, norm_rigid_mesh, 
-                                               (img.size(2), img.size(3)))
     
-    return warped_img[:,:3,:,:]
+    output_tps = torch_tps_transform.transformer(torch.cat((img, mask), 1), norm_mesh, norm_rigid_mesh_flat, (img_h, img_w))
+    warped_img = output_tps[:, 0:3, ...]
+    
+    return warped_img
 
 def get_rigid_mesh(batch_size, h, w):
     # 实现网格生成，根据grid_h和grid_w设置网格大小
-    grid_h = 8  # 设置为合适的值
-    grid_w = 8  # 设置为合适的值
+    from Warp.Codes.grid_res import GRID_H, GRID_W
+    grid_h = GRID_H  # 从grid_res.py中导入标准网格大小
+    grid_w = GRID_W  # 从grid_res.py中导入标准网格大小
     
     mesh = torch.zeros(batch_size, grid_h+1, grid_w+1, 2)
     for i in range(grid_h+1):

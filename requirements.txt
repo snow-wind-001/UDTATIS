@@ -1,10 +1,27 @@
-numpy==1.19.5
-torch==1.7.1
-torchvision==0.8.2
-opencv-python==4.5.3.56
-scikit-image==0.15.0
-matplotlib==3.5.1
-tensorboard==2.9.0
-tqdm==4.62.3
-efficientnet-pytorch==0.7.1
-Pillow==8.3.2 
+# Basic dependencies
+numpy>=1.19.5
+torch>=1.7.1
+torchvision>=0.8.2
+matplotlib>=3.5.1
+Pillow>=8.0.0
+opencv-python>=4.5.0
+scikit-image>=0.15.0
+tqdm>=4.62.0
+tensorboard>=2.9.0
+
+# Visualization and image processing
+torchvision>=0.8.2
+matplotlib>=3.5.1
+
+# Utilities
+pathlib>=1.0.1
+glob2>=0.7
+PyYAML>=6.0
+argparse>=1.4.0
+jsonschema>=4.0.0
+
+# For efficientnet models
+efficientnet-pytorch>=0.7.0
+
+# Optional: for mixed precision training
+torch-tensorrt>=1.0.0  # Optional for TensorRT support 

@@ -37,7 +37,7 @@ class FeatureVisualizer:
             return tensor.numpy()
         return tensor
     
-    def visualize_tensor(self, tensor, name, step=0, normalize=True, nrow=None):
+    def visualize_tensor(self, tensor, name, step=0, normalize=True, nrow=None, original_sizes=None, preserve_resolution=False):
         """
         可视化并保存张量
         
@@ -47,6 +47,8 @@ class FeatureVisualizer:
             step: 当前步骤/迭代次数
             normalize: 是否将像素值标准化到[0,1]
             nrow: 每行显示的图像数量
+            original_sizes: 原始图像尺寸列表 [(width, height), ...]
+            preserve_resolution: 是否保留原始分辨率
         """
         if tensor is None:
             return
@@ -57,6 +59,33 @@ class FeatureVisualizer:
         # 限制批次大小
         b = min(tensor.shape[0], self.max_images)
         tensor = tensor[:b]
+        
+        # 如果保留原始分辨率且提供了原始尺寸
+        if preserve_resolution and original_sizes and len(original_sizes) >= b:
+            for i in range(b):
+                # 获取当前图像
+                img = tensor[i].transpose(1, 2, 0)
+                
+                # 如果是单通道图像，转换为RGB
+                if img.shape[2] == 1:
+                    img = np.repeat(img, 3, axis=2)
+                
+                # 确保像素值在[0,1]范围内
+                if normalize and img.max() > 1.0:
+                    img = img / 255.0
+                
+                # 转换为PIL图像并调整回原始尺寸
+                pil_img = Image.fromarray((img * 255).astype(np.uint8))
+                orig_width, orig_height = original_sizes[i]
+                pil_img = pil_img.resize((orig_width, orig_height), Image.BICUBIC)
+                
+                # 保存图像
+                filename = f"{name}_{i}_{step}.png"
+                filepath = os.path.join(self.save_dir, filename)
+                pil_img.save(filepath)
+                print(f"以原始分辨率({orig_width}x{orig_height})保存图像到: {filepath}")
+            
+            return
         
         # 创建网格
         if nrow is None:
